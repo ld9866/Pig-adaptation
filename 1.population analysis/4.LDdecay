@@ -1,0 +1,132 @@
+#!/bin/bash
+
+############################################################
+# Linkage Disequilibrium Decay Analysis Pipeline
+#
+# Author: Lidong
+#
+# Description:
+# This pipeline analyzes linkage disequilibrium (LD) decay
+# patterns across different populations. SNP genotype data
+# are filtered using PLINK, converted back to VCF format,
+# separated by population groups, and analyzed using
+# PopLDdecay. The LD decay curves are then visualized.
+#
+# Workflow:
+#   1. Convert VCF to PLINK format
+#   2. SNP quality control filtering
+#   3. Convert PLINK files back to VCF
+#   4. Extract population-specific VCF files
+#   5. Calculate LD decay using PopLDdecay
+#   6. Plot LD decay curves
+#
+# Requirements:
+#   PLINK
+#   bcftools
+#   bgzip
+#   PopLDdecay
+#   Perl
+#
+# Input:
+#   Pig.snps.filtered.simple.M2.vcf.gz
+#   list (population group names)
+#
+# Output:
+#   LD decay statistics
+#   LD decay plots
+############################################################
+
+
+# -----------------------------
+# Software paths
+# -----------------------------
+PLINK=plink
+BCFTOOLS=bcftools
+BGZIP=bgzip
+POP_LD=PopLDdecay
+PERL=perl
+
+
+# -----------------------------
+# Input VCF file
+# -----------------------------
+VCF=Pig.snps.filtered.simple.M2.vcf.gz
+
+
+# -----------------------------
+# Output prefix
+# -----------------------------
+PREFIX=1151.snp
+
+
+############################################################
+# Step 1: Convert VCF to PLINK format
+############################################################
+$PLINK \
+--vcf ${VCF} \
+--make-bed \
+--out ${PREFIX}
+
+
+############################################################
+# Step 2: SNP quality control
+# Remove SNPs with high missing rate and low MAF
+############################################################
+$PLINK \
+--bfile ${PREFIX} \
+--geno 0.05 \
+--maf 0.05 \
+--hwe 0.00000001 \
+--make-bed \
+--out ${PREFIX}.qc
+
+
+############################################################
+# Step 3: Convert PLINK files back to VCF
+############################################################
+$PLINK \
+--bfile ${PREFIX}.qc \
+--recode vcf \
+--out ${PREFIX}.qc
+
+$BGZIP ${PREFIX}.qc.vcf
+
+
+############################################################
+# Step 4: Extract population-specific VCF files
+############################################################
+for POP in `cat list`
+do
+    nohup $BCFTOOLS view \
+    -S ${POP}.txt \
+    -O z \
+    -o ${POP}.vcf.gz \
+    ${PREFIX}.qc.vcf.gz &
+done
+
+
+############################################################
+# Step 5: Calculate LD decay for each population
+############################################################
+for POP in `cat list`
+do
+    nohup $POP_LD \
+    -InVCF ${POP}.vcf.gz \
+    -OutStat group.${POP} &
+done
+
+
+############################################################
+# Step 6: Plot LD decay curves
+############################################################
+$PERL /path/PopLDdecay-3.43/bin/Plot_MultiPop.pl \
+-inList group.list \
+-output Fig.all
+
+
+echo "========================================="
+echo " LD decay analysis completed"
+echo " Output files:"
+echo " group.* (LD statistics)"
+echo " Fig.all.* (LD decay plots)"
+echo "========================================="
