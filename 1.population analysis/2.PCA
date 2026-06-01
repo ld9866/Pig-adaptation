@@ -1,0 +1,108 @@
+#!/bin/bash
+
+############################################################
+# Population Structure Analysis Pipeline (PCA)
+#
+# Author: Lidong
+#
+# Description:
+# This pipeline performs population structure analysis
+# using SNP genotype data. The workflow converts VCF
+# files into PLINK format, applies SNP quality control,
+# removes outgroup individuals,
+# and calculates principal components for population
+# structure inference.
+#
+# Workflow:
+#   1. Convert VCF to PLINK format
+#   2. SNP quality control filtering
+#   3. Calculate genetic distance matrix
+#   4. Remove outgroup individuals
+#   5. Perform principal component analysis (PCA)
+#
+# Requirements:
+#   PLINK
+#
+# Input:
+#   Pig.snps.filtered.simple.M2.vcf.gz
+#
+# Output:
+#   PCA eigenvectors and eigenvalues
+############################################################
+
+
+# -----------------------------
+# Software paths
+# -----------------------------
+PLINK=plink
+
+
+# -----------------------------
+# Input VCF file
+# -----------------------------
+VCF=Pig.snps.filtered.simple.M2.vcf.gz
+
+
+# -----------------------------
+# Output prefix
+# -----------------------------
+PREFIX=1151.snp
+
+
+############################################################
+# Step 1: Convert VCF to PLINK format
+############################################################
+$PLINK \
+--vcf ${VCF} \
+--make-bed \
+--out ${PREFIX}
+
+
+############################################################
+# Step 2: SNP quality control
+# Remove SNPs with high missing rate and low MAF
+############################################################
+$PLINK \
+--bfile ${PREFIX} \
+--geno 0.05 \
+--maf 0.05 \
+--hwe 0.00000001 \
+--make-bed \
+--out ${PREFIX}.qc
+
+
+############################################################
+# Step 3: Calculate genetic distance matrix
+############################################################
+$PLINK \
+--bfile ${PREFIX}.qc \
+--chr-set 18 \
+--distance-matrix \
+--out ${PREFIX}.qc
+
+
+############################################################
+# Step 4: Remove outgroup individuals
+############################################################
+$PLINK \
+--bfile ${PREFIX}.qc \
+--remove remove.list \
+--make-bed \
+--out 1150.snp.qc
+
+
+############################################################
+# Step 5: Principal Component Analysis (PCA)
+############################################################
+$PLINK \
+--bfile 1150.snp.qc \
+--pca 10 \
+--out 1150.snp.qc
+
+
+echo "========================================="
+echo " PCA analysis completed"
+echo " Output files:"
+echo " 1150.snp.qc.eigenvec"
+echo " 1150.snp.qc.eigenval"
+echo "========================================="
