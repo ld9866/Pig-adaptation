@@ -1,0 +1,135 @@
+#!/bin/bash
+
+############################################################
+# Population Genetic Distance Analysis Pipeline
+#
+# Author: Lidong
+#
+# Description:
+# This pipeline converts filtered VCF files into PLINK format,
+# performs SNP quality control, and calculates pairwise genetic
+# distance between individuals. The resulting
+# distance matrix is formatted into MEGA format for phylogenetic
+# visualization using iTOL.
+#
+# Workflow:
+#   1. Convert VCF to PLINK format
+#   2. SNP quality control filtering
+#   3. Calculate genetic distance matrix
+#   4. Convert PLINK distance matrix to MEGA format
+#   5. Visualize phylogenetic tree using iTOL
+#
+# Requirements:
+#   PLINK
+#   Perl
+#
+# Input:
+#   Pig.snps.filtered.simple.M2.vcf.gz
+#
+# Output:
+#   Genetic distance matrix
+#   MEGA format distance file
+############################################################
+
+
+# -----------------------------
+# Software paths
+# -----------------------------
+PLINK=plink
+PERL=perl
+
+
+# -----------------------------
+# Input VCF file
+# -----------------------------
+VCF=Pig.snps.filtered.simple.M2.vcf.gz
+
+
+# -----------------------------
+# Output prefix
+# -----------------------------
+PREFIX=1151.snp
+
+
+############################################################
+# Step 1: Convert VCF to PLINK format
+############################################################
+$PLINK \
+--vcf ${VCF} \
+--make-bed \
+--out ${PREFIX}
+
+
+############################################################
+# Step 2: SNP quality control
+# Remove SNPs with high missing rate and low MAF
+############################################################
+$PLINK \
+--bfile ${PREFIX} \
+--geno 0.0 \
+--maf 0.05 \
+--hwe 0.00000001 \
+--make-bed \
+--out ${PREFIX}.qc
+
+
+############################################################
+# Step 3: Calculate pairwise genetic distance
+############################################################
+$PLINK \
+--bfile ${PREFIX}.qc \
+--chr-set 18 \
+--distance-matrix \
+--out ${PREFIX}.qc
+
+
+############################################################
+# Step 4: Convert PLINK distance matrix to MEGA format
+############################################################
+
+# Sample labels
+$PERL -e '
+while(<>){
+    chomp;
+    @F = split/\s+/;
+    $i++;
+    print "[$i]#$F[1]\n"
+}' ${PREFIX}.qc.mdist.id > ${PREFIX}.qc.mega
+
+
+# Sample index
+$PERL -e '
+print "[ ";
+while(<>){
+    chomp;
+    @F = split/\s+/;
+    $i++;
+    print "$i "
+}
+print "]\n"
+' ${PREFIX}.qc.mdist.id >> ${PREFIX}.qc.mega
+
+
+# Distance matrix
+$PERL -e '
+while(<>){
+    chomp;
+    my @F = split/\s+/;
+    $i++;
+    print "[$i]";
+    foreach (0..$i-2){
+        print " $F[$_]"
+    }
+    print "\n"
+}' ${PREFIX}.qc.mdist >> ${PREFIX}.qc.mega
+
+
+############################################################
+# Step 5: Visualize phylogenetic tree
+############################################################
+echo "========================================="
+echo " Genetic distance matrix generated"
+echo " MEGA file: ${PREFIX}.qc.mega"
+echo " Upload to iTOL for visualization:"
+echo " https://itol.embl.de/"
+echo "========================================="
