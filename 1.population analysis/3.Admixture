@@ -1,0 +1,112 @@
+#!/bin/bash
+
+############################################################
+# Population Structure Analysis Pipeline (ADMIXTURE)
+#
+# Author: Lidong
+#
+# Description:
+# This pipeline performs population structure inference
+# using SNP genotype data. The workflow converts VCF files
+# into PLINK format, performs SNP quality control, 
+# removes outgroup individuals, and estimates
+# ancestry proportions using ADMIXTURE.
+#
+# Workflow:
+#   1. Convert VCF to PLINK format
+#   2. SNP quality control filtering
+#   3. Calculate genetic distance matrix
+#   4. Remove outgroup individuals
+#   5. Run ADMIXTURE for multiple K values
+#
+# Requirements:
+#   PLINK
+#   ADMIXTURE
+#
+# Input:
+#   Pig.snps.filtered.simple.M2.vcf.gz
+#
+# Output:
+#   ADMIXTURE ancestry proportions (Q matrix)
+#   Cross-validation error logs
+############################################################
+
+
+# -----------------------------
+# Software paths
+# -----------------------------
+PLINK=plink
+ADMIXTURE=admixture
+
+
+# -----------------------------
+# Input VCF file
+# -----------------------------
+VCF=Pig.snps.filtered.simple.M2.vcf.gz
+
+
+# -----------------------------
+# Output prefix
+# -----------------------------
+PREFIX=1303.snp
+
+
+############################################################
+# Step 1: Convert VCF to PLINK format
+############################################################
+$PLINK \
+--vcf ${VCF} \
+--make-bed \
+--out ${PREFIX}
+
+
+############################################################
+# Step 2: SNP quality control
+# Remove SNPs with high missing rate and low MAF
+############################################################
+$PLINK \
+--bfile ${PREFIX} \
+--geno 0.05 \
+--maf 0.05 \
+--hwe 0.00000001 \
+--make-bed \
+--out ${PREFIX}.qc
+
+
+############################################################
+# Step 3: Calculate genetic distance matrix
+############################################################
+$PLINK \
+--bfile ${PREFIX}.qc \
+--chr-set 18 \
+--distance-matrix \
+--out ${PREFIX}.qc
+
+
+############################################################
+# Step 4: Remove outgroup individuals
+############################################################
+$PLINK \
+--bfile ${PREFIX}.qc \
+--remove remove.list \
+--make-bed \
+--out 1150.snp.qc
+
+
+############################################################
+# Step 5: Run ADMIXTURE for K = 2 to 10
+############################################################
+for K in {2..10}
+do
+    $ADMIXTURE \
+    -j10 \
+    --cv \
+    1150.snp.qc.bed ${K} \
+    | tee log${K}.out &
+done
+
+
+echo "========================================="
+echo " ADMIXTURE analysis completed"
+echo " Check cross-validation error in log*.out"
+echo "========================================="
