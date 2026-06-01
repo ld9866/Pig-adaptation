@@ -1,0 +1,238 @@
+#!/bin/bash
+
+############################################################
+# Runs of Homozygosity (ROH) Analysis Pipeline
+#
+# Author: Lidong
+#
+# Description:
+# This pipeline detects Runs of Homozygosity (ROH) from
+# SNP genotype data using PLINK and calculates genomic
+# inbreeding coefficients based on ROH segments.
+#
+# Workflow:
+#   1. Convert VCF to PLINK format
+#   2. SNP quality control filtering
+#   3. Detect ROH segments using PLINK
+#   4. Calculate ROH statistics using R
+#
+# Requirements:
+#   PLINK
+#   R
+#
+# Input:
+#   Pig.snps.filtered.simple.M2.vcf.gz
+#
+# Output:
+#   ROH segment file
+#   ROH statistics per individual
+############################################################
+
+
+# -----------------------------
+# Software paths
+# -----------------------------
+PLINK=plink
+
+
+# -----------------------------
+# Input VCF file
+# -----------------------------
+VCF=Pig.snps.filtered.simple.M2.vcf.gz
+
+
+# -----------------------------
+# Output prefix
+# -----------------------------
+PREFIX=1151.snp
+
+
+############################################################
+# Step 1: Convert VCF to PLINK format
+############################################################
+$PLINK \
+--vcf ${VCF} \
+--make-bed \
+--out ${PREFIX}
+
+
+############################################################
+# Step 2: Export MAP/PED files (optional)
+############################################################
+$PLINK \
+--bfile ${PREFIX} \
+--recode \
+--out ${PREFIX}
+
+
+############################################################
+# Step 3: SNP quality control
+# Remove SNPs with high missing rate and low MAF
+############################################################
+$PLINK \
+--bfile ${PREFIX} \
+--geno 0.05 \
+--maf 0.05 \
+--hwe 0.00000001 \
+--make-bed \
+--out ${PREFIX}.qc
+
+
+############################################################
+# Step 4: Five individuals were randomly selected for each variety
+############################################################
+$PLINK \
+--bfile ${PREFIX}.qc \
+--keep keep.list \
+--make-bed \
+--out 395.snp.qc
+
+
+############################################################
+# Step 5: ROH detection
+############################################################
+$PLINK \
+--bfile 395.snp.qc \
+--homozyg \
+--homozyg-density 100 \
+--homozyg-gap 100 \
+--homozyg-kb 500 \
+--homozyg-snp 50 \
+--homozyg-window-het 1 \
+--homozyg-window-missing 10 \
+--homozyg-window-snp 50 \
+--noweb \
+--out 395.snp.qc.ROH
+
+
+echo "========================================="
+echo " ROH detection completed"
+echo " Output file:"
+echo " 395.snp.qc.ROH.hom"
+echo "========================================="
+
+########################################################################## ROH_statistics.R 
+############################################################
+# ROH Statistics Analysis
+#
+# Author: Lidong
+#
+# Description:
+# This script calculates genomic inbreeding coefficients
+# based on ROH segments and summarizes ROH statistics for
+# each individual.
+############################################################
+
+rm(list=ls())
+
+library(dplyr)
+
+options(stringsAsFactors=FALSE)
+options(scipen=999)
+
+setwd("work_path/")
+
+############################################################
+# Step 1: Calculate genome length
+############################################################
+
+map=read.table('1151.snp.qc.map',header=FALSE)
+
+colnames(map)=c('CHR','snp','pos_cM','pos_bp')
+
+mapTL= map %>% 
+  group_by(CHR) %>% 
+  summarise(n=n(),TL=max(pos_bp))
+
+mapTL = as.data.frame(mapTL)
+
+Total_length_bp=sum(mapTL$TL)
+
+Total_length_Mb=Total_length_bp/1000000
+
+Total_length_Mb
+
+
+############################################################
+# Step 2: Load ROH segments
+############################################################
+
+dat=read.table("395.snp.qc.ROH.hom",header=TRUE)
+
+dat$Mb=dat$KB/1000
+
+summary(dat)
+
+
+############################################################
+# Step 3: Calculate ROH statistics per individual
+############################################################
+
+idvec=unique(dat$IID)
+
+out=matrix(nrow=length(idvec),ncol=9)
+
+colnames(out)=c(
+'id','nseg','nseg_short','nseg_long',
+'TL_short','TL_long','Froh','Fshort','Flong'
+)
+
+cnt=0
+
+for (i in idvec){
+
+  sub=dat[dat$IID==i,]
+
+  cnt=cnt+1
+
+  nseg=nrow(sub)
+
+  TL=sum(sub$Mb)
+
+  Froh=TL/2265.503
+
+  Short=sub[sub$Mb < 1.5,]
+
+  Long=sub[sub$Mb >= 1.5,]
+
+  nShort=nrow(Short)
+
+  nLong=nrow(Long)
+
+  TL_short=sum(Short$Mb)
+
+  TL_long=sum(Long$Mb)
+
+  Fshort= TL_short/Total_length_Mb
+
+  Flong= TL_long/Total_length_Mb
+
+  out[cnt,]=c(
+    i,nseg,nShort,nLong,
+    TL_short,TL_long,
+    Froh,Fshort,Flong
+  )
+
+}
+
+out=as.data.frame(out)
+
+summary(out[,-1])
+
+
+############################################################
+# Step 4: Export results
+############################################################
+
+write.table(
+out,
+"395.snp.qc.ROH.1.5Mb.txt",
+row.names=FALSE,
+col.names=TRUE
+)
+
+write.csv(
+out,
+"395.snp.qc.ROH.1.5Mb.csv",
+row.names=FALSE
+)
