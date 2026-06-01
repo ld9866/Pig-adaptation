@@ -1,0 +1,54 @@
+############################################################
+# Population genetic statistics: Fst and nucleotide diversity (π)
+# Software: VCFtools
+# Window size: 50 kb
+# Step size: 25 kb
+############################################################
+
+############################
+# Define chromosome set
+############################
+CHR_LIST="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 X"
+
+############################
+# 1. Genome-wide Fst calculation
+# Population comparison: A vs B
+############################
+
+for chr in ${CHR_LIST}
+do
+    vcftools \
+        --gzvcf ${chr}.snps.filtered.simple.M2.rename.vcf.gz \
+        --weir-fst-pop A.list \
+        --weir-fst-pop B.list \
+        --maf 0.05 \
+        --fst-window-size 50000 \
+        --fst-window-step 25000 \
+        --out chr.AB.${chr} &
+done
+
+wait
+
+############################
+# 2. Nucleotide diversity (π)
+# Population: A
+############################
+
+for chr in ${CHR_LIST}
+do
+    vcftools \
+        --gzvcf ${chr}.snps.filtered.simple.M2.rename.vcf.gz \
+        --keep A.list \
+        --maf 0.05 \
+        --window-pi 50000 \
+        --window-pi-step 25000 \
+        --out A.chr${chr} &
+done
+
+wait
+
+############################################################
+# Output files
+# Fst : chr.AB.*.windowed.weir.fst
+# Pi  : A.chr*.windowed.pi
+############################################################
