@@ -1,0 +1,55 @@
+#!/usr/bin/env Rscript
+# ==============================================================================
+# Script: preprocessing_and_integration.R
+# Description: Sample merging, ribosomal & cell cycle regression, PCA, and Harmony integration
+# ==============================================================================
+
+# 1. Combine samples and annotate batch metadata
+seu_obj <- merge(seu_obj1, y = c(seu_obj2, seu_obj3, seu_obj4, seu_obj5, seu_obj6, 
+                                 seu_obj7, seu_obj8, seu_obj9, seu_obj10, seu_obj11),
+                 add.cell.ids = samples, project = "lung")
+
+# 2. Regress out ribosomal genes
+ribo.genes <- grep("^RPS|^RPL", rownames(seu_obj), value = TRUE)
+seu_obj[["percent.ribo"]] <- Matrix::colSums(GetAssayData(seu_obj, slot = "counts")[ribo.genes, ]) /
+                             Matrix::colSums(GetAssayData(seu_obj, slot = "counts")) * 100
+
+seu_obj <- NormalizeData(seu_obj) %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures = 3000) %>%
+  ScaleData(vars.to.regress = c("percent.ribo"))
+
+# 3. Cell cycle scoring
+s.genes <- c("MCM5", "PCNA", "TYMS", "FEN1", "MCM2", "MCM4", "RRM1", "UNG",
+             "GINS2", "MCM6", "CDCA7", "DTL", "PRIM1", "UHRF1", "HELLS",
+             "RFC2", "RPA2", "NASP", "RAD51AP1", "GMNN", "WDR76", "SLBP",
+             "CCNE2", "UBR7", "POLD3", "MSH2", "ATAD2", "RAD51", "RRM2",
+             "CDC45", "CDC6", "EXO1", "TIPIN", "DSCC1", "BLM", "CASP8AP2",
+             "USP1", "CLSPN", "POLA1", "CHAF1B", "BRIP1", "E2F8")
+
+g2m.genes <- c("HMGB2", "CDK1", "NUSAP1", "UBE2C", "BIRC5", "TPX2", "TOP2A",
+               "NDC80", "CKS2", "NUF2", "CKS1B", "MKI67", "TMPO", "CENPF",
+               "TACC3", "FAM64A", "SMC4", "CCNB2", "CKAP2L", "CKAP2",
+               "AURKB", "BUB1", "KIF11", "ANP32E", "TUBB4B", "GTSE1",
+               "KIF20B", "HJURP", "CDCA3", "CDC20", "TTK", "CDC25C",
+               "KIF2C", "RANGAP1", "NCAPD2", "DLGAP5", "CDCA2", "CDCA8",
+               "ECT2", "KIF23", "HMMR", "AURKA", "PSRC1", "ANLN",
+               "LBR", "CKAP5", "CENPE", "CTCF", "NEK2", "G2E3", "GAS2L3",
+               "CBX5", "CENPA")
+
+seu_obj <- CellCycleScoring(seu_obj, 
+                            s.features = s.genes, 
+                            g2m.features = g2m.genes,
+                            set.ident = T)  
+
+# 4. Cell cycle regression (Critical step!)
+seu_obj <- ScaleData(seu_obj, 
+                     vars.to.regress = c("S.Score", "G2M.Score"),
+                     features = rownames(seu_obj))  
+
+# 5. PCA dimensionality reduction (Must be performed AFTER regression!)
+seu_obj <- RunPCA(seu_obj, verbose = FALSE)
+
+# 6. Batch correction using Harmony
+system.time({
+  seu_obj <- RunHarmony(seu_obj, group.by.vars = "orig.ident")
+})
