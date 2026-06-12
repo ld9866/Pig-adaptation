@@ -1,0 +1,51 @@
+#!/usr/bin/env Rscript
+# ==============================================================================
+# Script: pseudotime_trajectory_monocle.R
+# Description: Monocle v1 pseudotime inference, trajectory visualization, and root specification
+# ==============================================================================
+
+library(monocle)
+
+# --- 1. Convert Seurat Object to CellDataSet ---
+data <- as(as.matrix(seu_obj@assays$RNA@counts), 'sparseMatrix')
+pd <- new('AnnotatedDataFrame', data = seu_obj@meta.data)
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+
+mycds <- newCellDataSet(data,
+                        phenoData = pd,
+                        featureData = fd,
+                        expressionFamily = negbinomial.size())
+
+# --- 2. Normalization & Dispersion Estimation ---
+mycds <- estimateSizeFactors(mycds)
+mycds <- estimateDispersions(mycds, cores = 10, relative_expr = TRUE)
+
+disp_table <- dispersionTable(mycds)
+disp.genes <- subset(disp_table, mean_expression >= 0.1 & dispersion_empirical >= 1 * dispersion_fit)$gene_id
+mycds <- setOrderingFilter(mycds, disp.genes)
+
+# --- 3. Dimensionality Reduction & Initial Ordering ---
+mycds <- reduceDimension(mycds, max_components = 2, method = 'DDRTree')
+suppressWarnings(mycds <- orderCells(mycds))
+
+# Order cell types by biological hierarchy
+plot_cell_trajectory(mycds, color_by = "celltype")
+plot_cell_trajectory(mycds, color_by = "Pseudotime")
+
+# --- 4. Pseudotime Direction Check & Reversal ---
+#####Note: Pseudotime direction may oppose true biological progression; reverse if prior knowledge supports it
+ori.pse <- plot_cell_trajectory(mycds, color_by = "Pseudotime")
+suppressWarnings(mycds <- orderCells(mycds, reverse = T))
+revserse.pse <- plot_cell_trajectory(mycds, color_by = "Pseudotime")
+ori.pse | revserse.pse
+
+# --- 5. Manual Root Specification ---
+#####Manually specify the root cells for pseudotime trajectory
+mycds <- orderCells(mycds)
+plot_cell_trajectory(mycds, color_by = "State")
+table(pData(mycds)$State, pData(mycds)$celltype)
+
+mycds <- orderCells(mycds, root_state = 3)
+plot_cell_trajectory(mycds, color_by = "Pseudotime")
+plot_cell_trajectory(mycds, color_by = "celltype")
