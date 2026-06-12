@@ -1,0 +1,107 @@
+#!/usr/bin/env Rscript
+# ==============================================================================
+# Script: subclustering_refinement.R
+# Description: Subclustering and cell type annotation refinement for major lineages
+# ==============================================================================
+
+# ==========================================
+# 1. Epithelial Cell Subclustering & Annotation
+# ==========================================
+## Subclustering of [Cell Type] population
+seu_Epi <- subset(seu_obj_anno, cells = rownames(seu_obj_anno@meta.data[seu_obj_anno@meta.data$celltype == "Epi", ]))
+table(seu_Epi@meta.data$celltype)
+DimPlot(object = seu_Epi, group.by = 'celltype', reduction = "umap", label = TRUE)
+
+seu_Epi <- RunUMAP(seu_Epi, reduction = "harmony", dims = 1:20)
+seu_Epi <- FindNeighbors(seu_Epi, reduction = "harmony", dims = 1:20) %>%
+  FindClusters(resolution = 0.6)
+DimPlot(seu_Epi, reduction = "umap", group.by = "seurat_clusters", label = T, raster = FALSE)
+
+new.celltype.ids <- c("AT2", "AT1", "AT1", "Ciliated", "EFF1B2+Club", "Club", "Ciliated", "Club", "Ciliated", "AT1", "AT2")
+names(new.celltype.ids) <- levels(seu_Epi)
+seu_Epi <- RenameIdents(seu_Epi, new.celltype.ids)
+seu_Epi$celltype <- as.character(Idents(seu_Epi))
+DimPlot(seu_Epi, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+marker <- c("AGER", "CAV1", "PDPN", "EMP2",      # AT1
+            "SFTPC", "NAPSA", "SFTPD",            # AT2
+            "SCGB3A1", "EEF1B2",                  # EEF1B2+Club
+            "CLIC6", "SCGB1A1", "TFF3",           # Club
+            "CAPS", "TPPP3", "DYNLRB2", "FOXJ1")  # Ciliated
+
+
+# ==========================================
+# 2. Fibroblast Cell Subclustering & Annotation
+# ==========================================
+# fibroblast_annotation
+seu_Fib <- RunUMAP(seu_Fib, reduction = "harmony", dims = 1:20)
+seu_Fib <- FindNeighbors(seu_Fib, reduction = "harmony", dims = 1:20) %>%
+  FindClusters(resolution = 0.4)
+DimPlot(seu_Fib, reduction = "umap", group.by = "seurat_clusters", label = T, raster = FALSE)
+
+new.celltype.ids <- c("Myofibroblast", "Differentiating FB", "Adventitial FB", "Alveolar FB",
+                      "Differentiating FB", "Adventitial FB", "Alveolar FB",
+                      "Differentiating FB", "Adventitial FB")
+names(new.celltype.ids) <- levels(seu_Fib)
+seu_Fib <- RenameIdents(seu_Fib, new.celltype.ids)
+seu_Fib$celltype <- as.character(Idents(seu_Fib))
+DimPlot(seu_Fib, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+marker <- c("POSTN", "LOXL2", "LEF1",         # Myofibroblast
+            "ID1", "FOS",                     # Differentiating FB
+            "MFAP5", "PI16", "FBLN1",         # Adventitial FB
+            "MACF", "RGCC", "ITGA8")          # Alveolar FB
+
+
+# ==========================================
+# 3. Endothelial Cell Subclustering & Annotation
+# ==========================================
+# endothelial_annotation
+seu_End <- RunUMAP(seu_End, reduction = "harmony", dims = 1:20)
+seu_End <- FindNeighbors(seu_End, reduction = "harmony", dims = 1:20) %>%
+  FindClusters(resolution = 0.6)
+DimPlot(seu_End, reduction = "umap", group.by = "seurat_clusters", label = T, raster = FALSE)
+
+new.celltype.ids <- c("Vein EC", "Vein EC", "aCap EC", "aCap EC", "Art EC", "Vein EC",
+                      "Lymph EC", "aCap EC", "aCap EC")
+names(new.celltype.ids) <- levels(seu_End)
+seu_End <- RenameIdents(seu_End, new.celltype.ids)
+seu_End$celltype <- as.character(Idents(seu_End))
+DimPlot(seu_End, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+marker <- c("RGS6", "SLC6A2", "SPARCL1",   # Vein EC
+            "EDNRB", "KDR", "TBX2",         # aCap EC
+            "SLC38A1", "NFATC2", "GIMAP4",  # Lymph EC
+            "CXCL12", "MGP", "GJA5")        # Art EC
+
+
+# ==========================================
+# 4. Immune Cell Subclustering & Annotation
+# ==========================================
+# immune_annotation
+seu_Im <- RunUMAP(seu_Im, reduction = "harmony", dims = 1:30)
+seu_Im <- FindNeighbors(seu_Im, reduction = "harmony", dims = 1:30) %>%
+  FindClusters(resolution = 0.8)
+DimPlot(seu_Im, reduction = "umap", group.by = "seurat_clusters", label = T, raster = FALSE)
+
+new.celltype.ids <- c("CD8+ T", "CD8+ T", "NK", "Treg", "Plasma", "B",
+                      "NK", "Macrophage", "CD4+ T", "Monocytes", "Neutrophil", "CD4+ T", "Treg",
+                      "Pre-B", "Neutrophil", "DC langerhans", "DC", "Macrophage", "Macrophage", "CD4+ T",
+                      "Plasma", "Plasma")
+names(new.celltype.ids) <- levels(seu_Im)
+seu_Im <- RenameIdents(seu_Im, new.celltype.ids)
+seu_Im$celltype <- as.character(Idents(seu_Im))
+DimPlot(seu_Im, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+marker <- c("PRF1", "KLRK1",           # NK
+            "CD8A", "THEMIS",          # CD8+ T
+            "CD247", "GRAP2",          # CD4+ T
+            "ITK", "TSPAN5",           # Treg
+            "CD19", "CD79B",           # B
+            "VPREB3", "TCF3",          # Pre-B
+            "MZB1", "JCHAIN",          # Plasma
+            "LAMP3", "TCF4",           # DC
+            "FCER1A", "CD1E",          # DC langerhans
+            "CXCL8", "CSF3R",          # Neutrophil
+            "CTSD", "C1QA",            # Macrophage
+            "VCAN", "TBXAS1")          # Monocytes
