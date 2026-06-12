@@ -1,0 +1,76 @@
+#!/usr/bin/env Rscript
+# ==========================================
+# Gene Expression Comparison by Group: Violin Plot
+# Purpose: Visualize and test differential expression 
+#          of target genes between TB and LY groups
+# Gene: EPAS1 (example)
+# ==========================================
+
+# Load required libraries
+library(Seurat)
+library(tidyverse)
+library(ggpubr)
+
+# 1. Extract expression data and metadata
+df <- FetchData(seu_Epi, vars = c("EPAS1", "group")) %>%
+  drop_na()
+
+# 2. Ensure consistent factor ordering for plotting
+df$group <- factor(df$group, levels = c("TB", "LY"))
+
+# 3. Calculate y-axis limits for significance annotation
+y_max <- max(df$EPAS1, na.rm = TRUE)
+y_pos <- y_max * 1.05  # Position for bracket and p-value label
+
+# 4. Generate violin plot with boxplot overlay and statistical test
+p_violin <- ggplot(df, aes(x = group, y = EPAS1, fill = group)) +
+  geom_violin(trim = FALSE, alpha = 0.8) +
+  geom_boxplot(width = 0.1, outlier.shape = NA, alpha = 0.6) +
+  
+  # Add statistical comparison (Wilcoxon test)
+  stat_compare_means(
+    comparisons = list(c("TB", "LY")),
+    method = "wilcox.test",
+    label = "p.signif",
+    size = 7,
+    label.y = y_pos,
+    tip.length = 0.03
+  ) +
+  
+  scale_fill_manual(values = c("TB" = "#1f77b4", "LY" = "#ff7f0e")) +
+  labs(
+    title = "EPAS1 Expression: TB vs LY",
+    x = "Group",
+    y = "EPAS1 Expression (log-normalized)"
+  ) +
+  theme_classic(base_size = 14) +
+  coord_cartesian(ylim = c(min(df$EPAS1), y_pos * 1.1))
+
+print(p_violin)
+
+
+# ==========================================
+# Gene Expression Summary Statistics
+# Purpose: Calculate descriptive statistics for gene expression 
+#          across cell types and groups
+# Gene: HIF1AN (example)
+# ==========================================
+
+library(dplyr)
+
+expr_summary <- df %>%
+  group_by(celltype, group) %>%
+  summarise(
+    mean_expr = mean(EPAS1),
+    median_expr = median(EPAS1),
+    pct_expr = mean(EPAS1 > 0) * 100,  # Detection rate (%)
+    n_cells = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(celltype, group)
+
+# View results
+print(expr_summary)
+
+# Optional: Export to CSV
+# write.csv(expr_summary, "results/tables/EPAS1_expression_summary.csv", row.names = FALSE)
