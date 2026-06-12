@@ -1,0 +1,166 @@
+#!/usr/bin/env Rscript
+# ==============================================================================
+# Script: 07c.virtual_knockout_scTenifoldKnk.R
+# Description: Single-cell virtual knockout analysis using scTenifoldKnk
+# Target gene: DDIT4 (example) in tumor group (TB)
+# Input: seu_Epi (Seurat object with 'group' metadata)
+# Output: results/figures/sigDiff.txt, barplot, volcano plot, pie chart
+# ==============================================================================
+
+# ==========================================
+# 1. Load libraries and set environment
+# ==========================================
+library(scTenifoldKnk)
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(igraph)
+library(ggrepel)
+
+set.seed(123456)
+target_gene <- "DDIT4"  # Target gene name (modify as needed)
+
+# Create output directory
+dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+
+# ==========================================
+# 2. Data preparation and preprocessing
+# ==========================================
+# Subset to tumor group only
+pbmc <- subset(seu_Epi, subset = group == "TB")
+
+# Extract count matrix
+countMat <- GetAssayData(pbmc, layer = "counts")
+
+# Identify highly variable genes (HVGs)
+pbmc <- FindVariableFeatures(object = pbmc, selection.method = "vst", nfeatures = 3000)
+hvgs <- VariableFeatures(pbmc)
+
+# Build analysis matrix: target gene + HVGs
+data <- as.data.frame(countMat[unique(c(target_gene, hvgs)), ])
+
+# Optional: subset to top 10,000 cells by mean expression (commented out by default)
+# cell_mean <- colMeans(data, na.rm = TRUE)
+# top_cell_idx <- order(cell_mean, decreasing = TRUE)[1:min(10000, length(cell_mean))]
+# data <- data[, top_cell_idx]
+# rm(pbmc)
+# rm(countMat)
+
+# ==========================================
+# 3. Run virtual knockout analysis (scTenifoldKnk)
+# ==========================================
+result <- scTenifoldKnk(
+  countMatrix      = data,
+  gKO              = target_gene,      # Gene to knock out
+  qc               = TRUE,             # Enable quality control
+  qc_mtThreshold   = 0.1,              # Mitochondrial gene threshold
+  qc_minLSize      = 1000,             # Minimum library size (genes per cell)
+  nc_nNet          = 10,               # Number of subnetworks
+  nc_nCells        = 500               # Cells sampled per network
+)
+
+# ==========================================
+# 4. Export differentially regulated genes table
+# ==========================================
+df <- result$diffRegulation
+df <- df[df$gene != target_gene, ]  # Exclude the knocked-out gene itself
+outTab <- df[df$p.value < 0.05, ]    # Filter by significance
+
+write.table(outTab, file = "results/figures/sigDiff.txt", 
+            sep = "\t", quote = FALSE, row.names = FALSE)
+
+# ==========================================
+# 5. Visualization 1: Top 20 regulated genes (bar plot)
+# ==========================================
+# Filter out Ensembl IDs (assume they start with "ENS")
+symbol_genes <- df[!grepl("^ENS", df$gene), ]
+
+# Select top 20 by absolute fold change
+top_genes <- head(symbol_genes[order(-symbol_genes$FC), ], 20)
+
+# Generate bar plot
+p1 <- ggplot(top_genes, aes(x = reorder(gene, FC), y = FC)) +
+  geom_bar(stat = 'identity', fill = '#5A9BD4') +
+  coord_flip() +
+  labs(title = "Top 20 Differentially Regulated Genes", 
+       x = "Gene", y = "Fold Change") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+print(p1)
+ggsave("results/figures/barplot_top20_FC.pdf", plot = p1, 
+       width = 8, height = 6, dpi = 300)
+
+# ==========================================
+# 6. Visualization 2: Volcano plot
+# ==========================================
+# Filter to gene symbols only
+df_symbol <- df[!grepl("^ENS", df$gene), ]
+
+# Compute -log10(p-value) and significance flag
+df_symbol$log_p.value <- -log10(df_symbol$p.value)
+df_symbol$significant <- ifelse(df_symbol$p.value < 0.05, 
+                                "Significant", "Not significant")
+
+# Select top 20 significant genes for labeling (by smallest p-value)
+sig_genes <- df_symbol[df_symbol$p.value < 0.05, ]
+label_genes <- head(sig_genes[order(sig_genes$p.value), ], 20)
+
+# Set y-axis upper limit (99.9th percentile to avoid outliers)
+y_upper <- quantile(df_symbol$log_p.value, 0.999, na.rm = TRUE)
+
+# Generate volcano plot
+p2 <- ggplot(df_symbol, aes(x = Z, y = log_p.value, color = significant)) +
+  geom_point(alpha = 0.7, size = 1) +
+  scale_color_manual(values = c("Significant" = "red", 
+                                "Not significant" = "gray50")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  # Label only top 20 significant genes
+  geom_text_repel(
+    data = label_genes,
+    aes(label = gene),
+    size = 3,
+    max.overlaps = 50,
+    box.padding = 0.5,
+    min.segment.length = 0.2
+  ) +
+  labs(title = "Volcano Plot (Gene Symbols Only, Top 20 Labeled)",
+       x = "Z-score",
+       y = "-log10(p-value)") +
+  theme_classic() +
+  coord_cartesian(ylim = c(0, y_upper)) +
+  theme(legend.position = "none")
+
+print(p2)
+ggsave("results/figures/volcano_plot.pdf", plot = p2, 
+       width = 6, height = 5, dpi = 300)
+
+# ==========================================
+# 7. Visualization 3: Proportion of significant genes (pie chart)
+# ==========================================
+sig_count <- table(df$significant)
+sig_df <- as.data.frame(sig_count)
+colnames(sig_df) <- c("category", "count")
+sig_df$percentage <- paste0(round(sig_df$count / sum(sig_df$count) * 100, 1), "%")
+
+p3 <- ggplot(sig_df, aes(x = "", y = count, fill = category)) +
+  geom_bar(stat = "identity", width = 1) +
+  geom_text(aes(label = percentage), 
+            position = position_stack(vjust = 0.5), size = 4) +
+  coord_polar("y", start = 0) +
+  scale_fill_manual(values = c("Significant" = "red", 
+                               "Not significant" = "lightgray")) +
+  labs(title = "Proportion of Significant Genes", fill = "") +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text = element_blank(),
+    panel.grid = element_blank(),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+print(p3)
+ggsave("results/figures/pie_significant_proportion.pdf", plot = p3, 
+       width = 6, height = 5, dpi = 300)
