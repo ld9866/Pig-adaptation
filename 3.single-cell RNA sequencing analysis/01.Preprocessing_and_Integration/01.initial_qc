@@ -1,0 +1,83 @@
+#!/usr/bin/env Rscript
+# ==============================================================================
+# Script: doublet_removal.R
+# Description: Quality control, metric calculation, and DoubletFinder-based doublet removal
+# ==============================================================================
+
+# --- Load Libraries & Define QC Thresholds ---
+library(DoubletFinder)
+library(Seurat)
+
+nFeature_lower <- 500
+nFeature_upper <- 5000
+nCount_lower   <- 800
+nCount_upper   <- 32000
+pMT_lower      <- 0
+pMT_upper      <- 5
+pHB_lower      <- 0
+pHB_upper      <- 100
+
+# --- Data Normalization, Scaling & PCA ---
+seu_obj5 <- NormalizeData(seu_obj5) %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures = 3000) %>%
+  ScaleData() %>%
+  RunPCA(verbose = FALSE) 
+
+# --- Calculate Percentage of Mitochondrial, Hemoglobin & Ribosomal Genes ---
+Pig_MT.genes <- c("ND1","ND2","COX1","COX2","ATP8","ATP6","COX3","ND3","ND4L","ND4","ND5","ND6","CYTB")
+Pig_MT <- match(Pig_MT.genes, rownames(seu_obj5@assays$RNA))
+Pig_MT.genes <- rownames(seu_obj5@assays$RNA)[Pig_MT]
+Pig_MT.genes <- Pig_MT.genes[!is.na(Pig_MT.genes)]
+seu_obj5[["pMT"]] <- PercentageFeatureSet(seu_obj5, features = Pig_MT.genes)
+
+HB.genes <- c("HBA1","HBA2","HBB","HBD","HBE1","HBG1","HBG2","HBM","HBQ1","HBZ")
+HB_m <- match(HB.genes, rownames(seu_obj5@assays$RNA))
+HB.genes <- rownames(seu_obj5@assays$RNA)[HB_m]
+HB.genes <- HB.genes[!is.na(HB.genes)]
+seu_obj5[["pHB"]] <- PercentageFeatureSet(seu_obj5, features = HB.genes)
+
+Pig_RP.genes <- c("RPL22","RPL11","RPS6KA1","RPS8","RPL5","RPS26","RPS6KC1","RPS6","RPS26A","RPL31","RPL36A","RPL32","RPL15","RPSA","RPL14")
+Pig_RP <- match(Pig_RP.genes, rownames(seu_obj5@assays$RNA))
+Pig_RP.genes <- rownames(seu_obj5@assays$RNA)[Pig_RP]
+Pig_RP.genes <- Pig_RP.genes[!is.na(Pig_RP.genes)]
+seu_obj5[["pRP"]] <- PercentageFeatureSet(seu_obj5, features = Pig_RP.genes)
+
+# --- QC Subsetting ---
+seu_obj5 <- subset(seu_obj5, subset = nFeature_RNA > nFeature_lower &
+                                   nFeature_RNA < nFeature_upper &
+                                   nCount_RNA > nCount_lower &
+                                   nCount_RNA < nCount_upper &
+                                   pMT < pMT_upper &
+                                   pHB < pHB_upper)
+
+# --- Dimensionality Reduction & Initial Clustering ---
+seu_obj5 <- RunUMAP(seu_obj5, dims = 1:20)
+#seu_obj5 <- RunTSNE(seu_obj5, dims = 1:20)
+seu_obj5 <- FindNeighbors(seu_obj5, dims = 1:20) %>% Findcelltypes(resolution = 0.2)
+
+# --- DoubletFinder Parameter Sweep ---
+sweep.res.list_seu_obj5 <- paramSweep(seu_obj5, PCs = 1:20, sct = FALSE)
+#head(sweep.res.list_seu_obj5)
+
+sweep.stats_seu_obj5 <- summarizeSweep(sweep.res.list_seu_obj5, GT = FALSE)
+bcmvn_seu_obj5 <- find.pK(sweep.stats_seu_obj5)
+mpK <- as.numeric(as.vector(bcmvn_seu_obj5$pK[which.max(bcmvn_seu_obj5$BCmetric)]))
+
+# --- Estimate Doublet Rate & Run DoubletFinder ---
+annotations <- seu_obj5@meta.data$seurat_celltypes
+homotypic.prop <- modelHomotypic(annotations)
+DoubletRate = ncol(seu_obj5) * 8 * 1e-6
+nExp_poi <- round(DoubletRate * length(seu_obj5$seurat_celltypes))
+nExp_poi.adj <- round(nExp_poi * (1 - homotypic.prop))
+
+#Doublet detection
+seu_obj5 <- doubletFinder(seu_obj5, PCs = 1:20, pN = 0.25, pK = mpK, nExp = nExp_poi, reuse.pANN = FALSE, sct = F)
+seu_obj5 <- doubletFinder(seu_obj5, PCs = 1:20, pN = 0.25, pK = mpK, nExp = nExp_poi.adj, reuse.pANN = FALSE, sct = F)
+
+# --- Visualization & Singlet Extraction ---
+DimPlot(seu_obj5, reduction = "umap", group.by = "DF.classifications_0.25_0.005_3993", label = T)
+
+#Doublet removal
+seu_obj5 <- subset(seu_obj5, cells = rownames(seu_obj5@meta.data[seu_obj5@meta.data$DF.classifications_0.25_0.005_3993 == "Singlet", ]))
+
+DimPlot(seu_obj5, reduction = "umap", group.by = "seurat_celltypes", label = T)
