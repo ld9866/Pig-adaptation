@@ -1,0 +1,80 @@
+#!/usr/bin/env Rscript
+# ==============================================================================
+# Script: 07b.virtual_knockout_enrichment.R
+# Description: Single-condition enrichment analysis for virtual knockout simulation
+# Input: GLUL_ko_fuji.csv
+# Output: Console plot + results/figures/GLUL_ko_enrichment.pdf
+# ==============================================================================
+
+# Load dependencies
+library(dplyr)
+library(ggplot2)
+
+# --- 1. Load and Process Data ---
+pathway <- read.csv("GLUL_ko_fuji.csv", header = TRUE)
+
+## Calculate Generation ratio, Background ratio, and Enrichment Fold Change
+pathway$Generatio <- pathway$intersection_size / pathway$query_size
+pathway$Backgroudratio <- pathway$term_size / pathway$effective_domain_size
+pathway$EnrichFoldchange <- pathway$Generatio / pathway$Backgroudratio
+kegg <- pathway
+
+# Sort by significance (-log10 p-value descending)
+kegg <- kegg %>%
+  arrange(desc(-log10(adjusted_p_value)))  
+
+# Preserve term order for y-axis display
+kegg$term_name <- factor(kegg$term_name, levels = kegg$term_name)
+
+# --- 2. Define Plot Theme ---
+mytheme <- theme(
+  axis.title = element_text(face = "bold", size = 10, colour = 'gray25'),
+  axis.text = element_text(face = "bold", size = 10, colour = 'gray25'),
+  axis.line = element_line(size = 0.5, colour = 'black'),
+  axis.ticks.y = element_blank(),
+  panel.background = element_rect(fill = "white"),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.minor.x = element_blank()
+)
+
+# Select single color scheme
+bar_color <- "#41b6c4"
+
+# --- 3. Generate Enrichment Bar Plot ---
+plot <- ggplot(kegg, aes(x = -log10(adjusted_p_value),
+                         y = term_name)) +
+  # Narrower bars for better spacing
+  geom_bar(stat = "identity", width = 0.5, fill = bar_color) +
+  geom_text(aes(x = 0.1, label = term_name),
+            hjust = "left", color = "#000000") +
+  geom_point(aes(x = 3.5, size = intersection_size),
+             shape = 21, fill = bar_color) +
+  geom_text(aes(x = 3.5, label = intersection_size)) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.2))) +
+  scale_size(range = c(3, 6),
+             guide = guide_legend(override.aes = list(fill = "#000000"))) +
+  labs(x = "-log10(adjusted_p_value)", y = "Term Name") +
+  ggtitle("GO Enrichment") +
+  mytheme +
+  theme_bw() +
+  theme(
+    legend.background = element_rect(color = "#969696"),
+    panel.border = element_rect(linewidth = 0.1),
+    plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 0.5, unit = "cm"),
+    axis.text = element_text(color = "#000000", size = 12),
+    axis.text.y = element_text(size = 12, lineheight = 1.2),
+    axis.text.y.left = element_blank(),
+    axis.ticks.length.y.left = unit(10, "pt"),
+    axis.ticks.y.left = element_line(color = NA),
+    axis.title = element_text(color = "#000000", size = 13),
+    plot.title = element_text(color = "#000000", size = 18, hjust = 0.5)
+  )
+
+# Display plot
+print(plot)
+
+# --- 4. Export Figure (GitHub Standard) ---
+dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+ggsave("results/figures/GLUL_ko_enrichment.pdf", plot = plot,
+       width = 10, height = 8, dpi = 300, bg = "white")
