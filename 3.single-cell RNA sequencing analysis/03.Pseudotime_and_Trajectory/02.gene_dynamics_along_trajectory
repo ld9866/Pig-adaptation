@@ -1,0 +1,44 @@
+#!/usr/bin/env Rscript
+# ==============================================================================
+# Script: gene_expression_dynamics_monocle.R
+# Description: Pseudotime-dependent gene testing, filtering, and trajectory heatmap
+# ==============================================================================
+
+# --- Gene Expression Dynamics ---
+mycds <- detectGenes(mycds, min_expr = 0.1)
+head(fData(mycds))
+
+mycds_expressed_genes <- row.names(subset(fData(mycds),
+                                          num_cells_expressed >= 10))
+
+clustering_DEG_genes <- differentialGeneTest(
+  mycds[mycds_expressed_genes, ],
+  fullModelFormulaStr = '~celltype',
+  cores = 10
+)
+
+cds_subset <- mycds[row.names(clustering_DEG_genes)[order(clustering_DEG_genes$qval)][1:1000], ]
+
+diff_test_res <- differentialGeneTest(
+  cds_subset,
+  fullModelFormulaStr = "~sm.ns(Pseudotime)"
+)
+
+library(dplyr)
+diff_test_res[, c("gene_short_name", "pval", "qval")] %>% head()
+
+sig.gene <- row.names(subset(diff_test_res, qval < 0.05))
+sig.gene <- sig.gene[!grepl("^ENS", sig.gene)]  # Convert Ensembl IDs to gene symbols
+
+plot_genes_in_pseudotime(
+  cds_subset[sig.gene],
+  color_by = 'celltype',
+  ncol = 5
+)
+
+plot_pseudotime_heatmap(
+  cds_subset[sig.gene, ],
+  num_clusters = 3,
+  cores = 1,
+  show_rownames = T
+)
