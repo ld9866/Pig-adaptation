@@ -1,0 +1,144 @@
+#!/usr/bin/env Rscript
+# ==============================================================================
+# Script: cellchat_comparison_ly_vs_tb.R
+# Description: Cell-Cell Communication Analysis: LY vs TB Comparison
+# ==============================================================================
+
+# Load required libraries
+library(CellChat)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(ComplexHeatmap)
+library(circlize) # Required for netVisual_circle rendering
+
+# Configure parallel processing (set once globally)
+future::plan("multisession", workers = 2) # Adjust based on system resources
+
+# ==========================================
+# 1. Helper Function: Create & Process CellChat Object
+# ==========================================
+create_process_cellchat <- function(seu_obj, group_name, cellchat_db, min_cells = 10) {
+  message(paste(" Processing group:", group_name))
+  
+  # Subset & prepare input
+  grp_seu <- subset(seu_obj, subset = group == group_name)
+  DefaultAssay(grp_seu) <- "RNA"
+  
+  grp_input <- GetAssayData(grp_seu, layer = "data")
+  grp_meta <- grp_seu@meta.data[, c("group", "celltype")]
+  colnames(grp_meta) <- c("group", "labels")
+  
+  # Validate alignment between expression matrix and metadata
+  if (!identical(colnames(grp_input), rownames(grp_meta))) {
+    stop("Column names of input matrix do not match row names of metadata.")
+  }
+  
+  # Initialize CellChat object
+  cc_obj <- createCellChat(object = grp_input, meta = grp_meta, group.by = "labels")
+  cc_obj@DB <- cellchat_db
+  
+  # Core analysis pipeline
+  cc_obj <- subsetData(cc_obj)
+  cc_obj <- identifyOverExpressedGenes(cc_obj)
+  cc_obj <- identifyOverExpressedInteractions(cc_obj)
+  cc_obj <- smoothData(cc_obj, adj = PPI.human) # Ensure PPI.human is available in environment
+  cc_obj <- computeCommunProb(cc_obj, type = "triMean")
+  cc_obj <- filterCommunication(cc_obj, min.cells = min_cells)
+  cc_obj <- computeCommunProbPathway(cc_obj)
+  cc_obj <- aggregateNet(cc_obj)
+  
+  return(cc_obj)
+}
+
+# ==========================================
+# 2. Run Pipeline for LY & TB Groups
+# ==========================================
+# Select database (switch to CellChatDB.mouse for murine data)
+CellChatDB.use <- CellChatDB.human
+
+LY.cellchat <- create_process_cellchat(seu_obj, "LY", CellChatDB.use)
+TB.cellchat <- create_process_cellchat(seu_obj, "TB", CellChatDB.use)
+
+# Create named list for comparative functions
+object.list <- list(LY = LY.cellchat, TB = TB.cellchat)
+
+# ==========================================
+# 3. Comparative Interaction Analysis
+# ==========================================
+message("Generating interaction comparison plots...")
+
+# Compare interaction counts & weights between groups
+gg1 <- compareInteractions(object.list, show.legend = FALSE, group = c(1, 2))
+gg2 <- compareInteractions(object.list, show.legend = FALSE, group = c(1, 2), measure = "weight")
+
+p_compare <- gg1 + gg2 + plot_annotation(title = "Interaction Comparison: LY vs TB")
+print(p_compare)
+
+# ==========================================
+# 4. Overview Circle Plots (Interaction Counts)
+# ==========================================
+weight.max <- getMaxWeight(object.list, attribute = c("idents", "count"))
+
+par(mfrow = c(1, 2), xpd = TRUE)
+for (i in seq_along(object.list)) {
+  netVisual_circle(
+    object.list[[i]]@net$count,
+    weight.scale = TRUE,
+    label.edge = FALSE,
+    edge.weight.max = weight.max[2],
+    edge.width.max = 12,
+    title.name = paste0("Interaction Count - ", names(object.list)[i])
+  )
+}
+
+# ==========================================
+# 5. Signaling Role Heatmaps (Pathway Union)
+# ==========================================
+message("Generating signaling role heatmaps...")
+pathway.union <- union(object.list[[1]]@netP$pathways, object.list[[2]]@netP$pathways)
+
+ht1 <- netAnalysis_signalingRole_heatmap(
+  object.list[[1]], pattern = "all", signaling = pathway.union,
+  title = names(object.list)[1], width = 5, height = 6, color.heatmap = "OrRd"
+)
+ht2 <- netAnalysis_signalingRole_heatmap(
+  object.list[[2]], pattern = "all", signaling = pathway.union,
+  title = names(object.list)[2], width = 5, height = 6, color.heatmap = "OrRd"
+)
+
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+
+# ==========================================
+# 6. Epithelial-Centric Communication (TB Group)
+# ==========================================
+message(" Generating epithelial sender/receiver networks...")
+
+cell_types <- levels(TB.cellchat@idents)
+epi_name <- "Epithelium" # Update if your cluster/celltype name differs
+
+if (!epi_name %in% cell_types) {
+  warning(paste("Cluster '", epi_name, "' not found in TB.cellchat. Please verify metadata."))
+} else {
+  mat <- TB.cellchat@net$weight
+  groupSize <- as.numeric(table(TB.cellchat@idents))
+  names(groupSize) <- cell_types
+  
+  par(mfrow = c(1, 2), xpd = TRUE, mar = c(1, 1, 3, 1))
+  
+  # Sender: Epithelium → All other cell types
+  mat_sender <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat_sender[epi_name, ] <- mat[epi_name, ]
+  netVisual_circle(mat_sender, vertex.weight = groupSize, weight.scale = TRUE,
+                   edge.weight.max = max(mat), title.name = "TB: Epithelium as Sender")
+  
+  # Receiver: All other cell types → Epithelium
+  mat_receiver <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat_receiver[, epi_name] <- mat[, epi_name]
+  netVisual_circle(mat_receiver, vertex.weight = groupSize, weight.scale = TRUE,
+                   edge.weight.max = max(mat), title.name = "TB: Epithelium as Receiver")
+}
+
+# Clean up parallel workers
+future::plan("sequential")
+message(" CellChat comparative analysis completed successfully.")
