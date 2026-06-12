@@ -1,0 +1,130 @@
+
+#!/usr/bin/env Rscript
+# ==========================================
+# Cell-Cell Communication Analysis (CellChat)
+
+
+# Load required libraries
+library(CellChat)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(svglite)
+
+# ==========================================
+# 1. Initialize CellChat Object & Database
+# ==========================================
+# Assumes 'seu_Epi' is pre-processed with 'celltype' metadata
+cellchat <- createCellChat(object = seu_Epi, group.by = "celltype")
+
+cellchat@DB <- CellChatDB.human
+cellchat <- subsetData(cellchat)
+
+# ==========================================
+# 2. Core Analysis Pipeline
+# ==========================================
+# Cross-platform parallelization (multisession works on Win/Mac/Linux)
+future::plan("multisession", workers = 40)
+
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+cellchat <- smoothData(cellchat, adj = PPI.human)
+cellchat <- computeCommunProb(cellchat, raw.use = TRUE)
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+
+future::plan("sequential") # Clean up parallel workers
+
+# ==========================================
+# 3. Pathway Ranking Visualization
+# ==========================================
+p5 <- rankNet(cellchat, mode = "comparison", stacked = TRUE, do.stat = TRUE)
+p6 <- rankNet(cellchat, mode = "comparison", stacked = FALSE, do.stat = TRUE)
+p_rank <- p5 + p6 + plot_annotation(title = "Pathway Ranking: Stacked vs. Grouped")
+print(p_rank)
+
+# ==========================================
+# 4. Condition Comparison: Bubble Plots
+# Purpose: Visualize up/down-regulated ligand-receptor pairs between conditions.
+# Prerequisite: 'cellchat' must contain merged datasets (see note below).
+# ==========================================
+
+# Note: If analyzing multiple conditions, merge them first:
+# object.list <- list(NL = cellchat_nl, LS = cellchat_ls)
+# cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+
+# Map numeric IDs to your actual cell types/clusters
+sources.use <- 4          # e.g., Fibroblasts
+targets.use <- 5:12       # e.g., Immune & Endothelial subsets
+comparison.groups <- c(1, 2) # Indices: 1 = NL (Control), 2 = LS (Disease/Treatment)
+
+# Bubble plot: Interactions stronger in dataset 2 (LS)
+p7 <- netVisual_bubble(cellchat,
+                       sources.use = sources.use,
+                       targets.use = targets.use,
+                       comparison = comparison.groups,
+                       max.dataset = 2,
+                       title.name = "Increased signaling in TB",
+                       angle.x = 45,
+                       remove.isolate = TRUE)
+
+# Bubble plot: Interactions weaker in dataset 2 (i.e., stronger in dataset 1 / NL)
+p8 <- netVisual_bubble(cellchat,
+                       sources.use = sources.use,
+                       targets.use = targets.use,
+                       comparison = comparison.groups,
+                       max.dataset = 1,
+                       title.name = "Decreased signaling in LY",
+                       angle.x = 45,
+                       remove.isolate = TRUE)
+
+# Combine & export
+p_bubble <- p7 + p8 + plot_annotation(title = "Differential Communication: TB vs LY")
+print(p_bubble)
+
+# ==========================================
+# 5. Signaling Network Visualization
+# ==========================================
+pathways.show <- c("NOTCH")
+
+# Use current object for single-condition plot, or object.list for multi-condition
+object.list <- list(Current = cellchat)
+weight.max <- getMaxWeight(object.list, slot.name = "netP", attribute = pathways.show)
+
+par(mfrow = c(1, length(object.list)), xpd = TRUE)
+for (i in seq_along(object.list)) {
+  netVisual_aggregate(object.list[[i]],
+                      signaling = pathways.show,
+                      layout = "circle",
+                      edge.weight.max = weight.max[1],
+                      edge.width.max = 10,
+                      signaling.name = paste(pathways.show, names(object.list)[i]))
+}
+
+# ==========================================
+# 6. Ligand/Receptor Expression by Dataset
+# ==========================================
+dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+
+# Lock factor levels for reproducible legend ordering
+cellchat@meta$datasets <- factor(cellchat@meta$datasets, levels = c("NL", "LS"))
+
+p_expr <- plotGeneExpression(cellchat,
+                             signaling = "NOTCH",
+                             split.by = "datasets",
+                             colors.ggplot = TRUE)
+
+p_expr <- p_expr +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "CXCL Pathway: Ligand/Receptor Expression by Dataset")
+
+ggsave("results/figures/CXCL_expression_by_dataset.pdf",
+       plot = p_expr, width = 10, height = 6, dpi = 300)
+
+# Save comparison bubble plot
+ggsave("results/figures/comm_bubble_NL_vs_LS.pdf",
+       plot = p_bubble, width = 14, height = 7, dpi = 300)
+
+message(" CellChat pipeline completed successfully.")
