@@ -1,0 +1,139 @@
+#!/usr/bin/env Rscript
+# ==============================================================================
+# Script: 08a.cell_composition_analysis.R
+# Description: Cell type composition analysis, alluvial flow & proportional bar plots
+# Input: Seurat object 'a' with 'group' and 'celltype' metadata
+# Output: results/tables/cell_percentage.csv, results/figures/barplot_counts_percentage.pdf
+# ==============================================================================
+
+# ==========================================
+# 1. Load libraries
+# ==========================================
+library(qs)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+library(SeuratData)
+library(gtools)
+library(ggalluvial)
+library(patchwork)
+library(scales)  # For percent formatting
+
+# ==========================================
+# 2. Configuration: Color palette
+# ==========================================
+allcolour <- c("#DC143C","#20B2AA","#FFA500","#9370DB","#98FB98","#F08080",
+               "#1E90FF","#FFFF00","#0000FF","#808000","#FF00FF","#FA8072",
+               "#7B68EE","#9400D3","#800080","#A0522D","#D2B48C","#D2691E",
+               "#87CEEB","#40E0D0","#5F9EA0","#FF1493","#0000CD","#008B8B",
+               "#FFE4B5","#8A2BE2","#228B22","#E9967A","#4682B4","#32CD32",
+               "#F0E68C","#FFFFE0","#EE82EE","#FF6347","#6A5ACD","#9932CC",
+               "#8B008B","#8B4513","#DEB887")
+
+# Create output directories
+dir.create("results/tables", recursive = TRUE, showWarnings = FALSE)
+dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+
+# ==========================================
+# 3. Data extraction & preprocessing
+# ==========================================
+metadata <- FetchData(a, c("group", "celltype"))
+
+# Calculate cell counts and percentages per group
+cell_counts <- metadata %>% count(group, celltype)
+total_cells_by_celltype <- cell_counts %>% group_by(celltype) %>% summarise(total = sum(n))
+total_cells <- cell_counts %>% group_by(group) %>% summarise(total = sum(n))
+
+cell_counts <- cell_counts %>% 
+  left_join(total_cells, by = "group") %>% 
+  mutate(percentage = n / total * 100)
+
+write.csv(cell_counts, "results/tables/cell_percentage.csv", row.names = FALSE)
+
+# ==========================================
+# 4. Visualization 1: Alluvial/Flow plot (p)
+# ==========================================
+df <- cell_counts
+df$celltype <- factor(df$celltype, levels = unique(df$celltype))
+df$Sample <- factor(df$Sample, levels = mixedsort(unique(df$Sample)))
+
+p <- ggplot(as.data.frame(df), 
+            aes(x = group, y = percentage, fill = celltype, 
+                stratum = celltype, alluvium = celltype)) +
+  geom_flow(width = 0.5, alpha = 0.3, knot.pos = 0, color = 'white') +
+  geom_col(width = 0.5, color = 'white') +
+  scale_y_continuous(expand = c(0, 0)) + 
+  scale_fill_manual(values = c("#20B2AA","#FFA500","#9370DB","#98FB98","#F08080",
+                               "#0000FF","#808000","#FF00FF","#FFE4B5","#8A2BE2",
+                               "#228B22","#E9967A","#4682B4")) +
+  xlab("") + 
+  ylab("Cell percentage") +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 75, hjust = 1, size = 20, face = 'bold'),
+    axis.text.y = element_text(size = 20, face = 'bold'),
+    axis.title.y = element_text(size = 24, face = 'bold'),
+    legend.text = element_text(size = 20),
+    legend.title = element_text(size = 24),
+    plot.margin = margin(t = 40, r = 10, b = 50, l = 50, unit = "pt")
+  )
+
+# ==========================================
+# 5. Visualization 2: Total cells per cell type (p1)
+# ==========================================
+p1 <- ggplot(total_cells_by_celltype, aes(x = total, y = celltype, fill = celltype)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 15, colour = "black"),
+    axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"),
+    axis.text.y = element_text(colour = "black"),
+    legend.position = "none"
+  ) +
+  labs(x = '# cells', y = NULL) +
+  scale_fill_manual(values = allcolour) +  
+  geom_text(aes(label = total), hjust = 0.3, size = 4, color = "black")
+
+# ==========================================
+# 6. Visualization 3: Stacked bar plot by sample (p2)
+# ==========================================
+cell_counts <- metadata %>%  
+  count(Sample, celltype) %>%                     
+  group_by(celltype) %>%                         
+  mutate(total_celltype = sum(n),                         
+         percent_in_celltype = n / total_celltype * 100) %>%   
+  ungroup()
+
+p2 <- ggplot(cell_counts, aes(x = celltype, y = n, fill = Sample)) +
+  geom_bar(stat = "identity", position = "fill", width = 0.8, size = 0, colour = "black") +
+  geom_text(aes(label = sprintf("%.1f", percent_in_celltype)), 
+            position = position_fill(vjust = 0.5), size = 4, color = "black") +
+  scale_fill_manual(values = allcolour) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_classic() +  
+  labs(x = NULL, y = "# percentage") +  
+  coord_flip() +  
+  theme(
+    axis.ticks.length = unit(0.1, "cm"),
+    text = element_text(size = 15, colour = "black"),
+    axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"),    
+    axis.text.y = element_text(colour = "black")
+  )
+
+# ==========================================
+# 7. Combine & Export
+# ==========================================
+p <- p + theme(aspect.ratio = 1)
+
+# Combine p1 and p2 horizontally
+combined_plot <- p1 + p2 + plot_layout(nrow = 1)
+
+# Display plots
+print(p)
+print(combined_plot)
+
+# Save combined figure
+ggsave("results/figures/barplot_counts_percentage.pdf", 
+       plot = combined_plot, width = 11.5, height = 5.5, dpi = 300)
+
+message(" Cell composition analysis completed. Outputs saved to results/")
