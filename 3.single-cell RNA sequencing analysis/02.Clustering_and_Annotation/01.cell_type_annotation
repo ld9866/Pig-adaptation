@@ -1,0 +1,114 @@
+#!/usr/bin/env Rscript
+# ==========================================
+# Clustering, Cell Type Annotation & Marker Visualization
+# Purpose: Dimensionality reduction, cluster filtering, identity renaming, 
+#          and publication-ready DotPlot for canonical markers.
+# ==========================================
+
+library(Seurat)
+library(ggplot2)
+
+# ==========================================
+# 1. UMAP, Clustering & Cluster Filtering
+# ==========================================
+message(" Running UMAP, neighbor finding & clustering...")
+seu_obj <- seu_obj %>%
+  RunUMAP(reduction = "harmony", dims = 1:25) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:25) %>%
+  FindClusters(resolution = 0.6)
+
+# Define clusters to exclude (e.g., low-quality, doublets, or unclassified)
+clusters_to_remove <- c("24", "27", "20", "12", "28", "14_4", "14_1", "14_3")
+valid_clusters <- setdiff(levels(Idents(seu_obj)), clusters_to_remove)
+
+# Safety check: warn if specified clusters don't exist
+missing_clusters <- setdiff(clusters_to_remove, levels(Idents(seu_obj)))
+if (length(missing_clusters) > 0) {
+  warning(paste("Clusters not found in object:", paste(missing_clusters, collapse = ", ")))
+}
+
+# Subset & re-factorize identities
+seu_obj <- subset(seu_obj, idents = valid_clusters)
+seu_obj$seurat_clusters <- factor(seu_obj$seurat_clusters)
+Idents(seu_obj) <- seu_obj$seurat_clusters
+
+# ==========================================
+# 2. Cell Type Annotation & Identity Renaming
+# ==========================================
+message("Annotating cell types & renaming identities...")
+
+# Mapping: Cluster ID -> Biological Cell Type
+# Adjust keys if your actual cluster IDs differ after filtering
+cluster_to_celltype <- c(
+  "0" = "T and NK", "1" = "T and NK", "2" = "T and NK",
+  "3" = "Plasma", "4" = "B", "5" = "T and NK",
+  "6" = "Endothelium", "7" = "Macrophage", "8" = "Monocytes",
+  "9" = "Neutrophil", "10" = "Endothelium", "11" = "Proliferating",
+  "12" = "B", "13" = "Neutrophil", "14" = "Epithelium2",
+  "15" = "DC1", "16" = "Epithelium1", "17" = "Epithelium1",
+  "18" = "Fibroblast", "19" = "Fibroblast", "20" = "DC2",
+  "22" = "Fibroblast", "23" = "Epithelium1", "24" = "Plasma",
+  "31" = "T and NK"
+)
+
+# Apply renaming
+seu_obj <- RenameIdents(seu_obj, cluster_to_celltype)
+seu_obj$celltype <- Idents(seu_obj)
+
+# Visualize annotated UMAP
+DimPlot(seu_obj, reduction = "umap", group.by = "celltype", label = TRUE, pt.size = 0.5) + NoLegend()
+
+# ==========================================
+# 3. Marker Gene DotPlot Visualization
+# ==========================================
+message("Generating canonical marker DotPlot...")
+
+# Define markers per cell type (clean, maintainable named list)
+markers_by_type <- list(
+  "T and NK"      = c("CD3E", "ITK", "CD3D"),
+  "Plasma"        = c("MZB1", "JCHAIN"),
+  "B"             = c("CD79B", "CD79A", "MS4A1"),
+  "Endothelium"   = c("PECAM1", "LDB2", "CDH5"),
+  "Macrophage"    = c("MSR1", "APOE", "CTSD"),
+  "Monocytes"     = c("VCAN", "TBXAS1", "CSF1R"),
+  "Neutrophil"    = c("G0S2", "CSF3R", "CXCL8"),
+  "Proliferating" = c("STMN1", "TOP2A", "CENPF"),
+  "Epithelium1"   = c("EPCAM", "KRT8", "KRT19"),
+  "Epithelium2"   = c("AGER", "PDPN", "EMP2"),
+  "Fibroblast"    = c("COL1A1", "LUM", "DCN"),
+  "DC1"           = c("FLT3", "CIITA", "SPECC1"),
+  "DC2"           = c("CTSS", "DAPK1", "CST3")
+)
+
+# Enforce plotting order (matches biological hierarchy / figure layout)
+celltype_order <- c(
+  "T and NK", "Plasma", "B", "Endothelium", "Macrophage", "Monocytes",
+  "Neutrophil", "Proliferating", "Epithelium1", "Epithelium2",
+  "Fibroblast", "DC1", "DC2"
+)
+
+# Reorder list to match plotting sequence
+features_list <- markers_by_type[celltype_order]
+
+# Generate DotPlot
+p_dot <- DotPlot(seu_obj,
+                 features = features_list,
+                 group.by = "celltype",
+                 cols = c("#ffffff", "firebrick3")) +
+  RotatedAxis() +
+  theme(
+    strip.text.x = element_text(size = 8),
+    axis.text.x  = element_text(color = "black", size = 10),
+    axis.text.y  = element_text(color = "black", size = 10),
+    panel.border = element_rect(color = "black"),
+    panel.spacing = unit(1, "mm"),
+    axis.title   = element_blank()
+  ) +
+  scale_y_discrete(limits = rev(celltype_order)) # Y-axis top-to-bottom order
+
+print(p_dot)
+
+# Recommended: Save publication-ready figure
+# ggsave("results/figures/celltype_marker_dotplot.pdf", p_dot, width = 10, height = 7, dpi = 300)
+
+message("Clustering, annotation & visualization completed.")
