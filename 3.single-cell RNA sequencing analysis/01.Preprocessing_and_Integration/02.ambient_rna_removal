@@ -1,0 +1,55 @@
+#!/usr/bin/env Rscript
+# ==============================================================================
+# Script: ambient_rna_contamination_filtering.R
+# Description: Estimate cellular contamination via decontX and filter low-quality cells
+# ==============================================================================
+
+# --- Load Libraries ---
+library(Seurat)
+library(decontX)
+library(ggplot2)
+
+# --- Load Data & Run decontX ---
+scobj <- readRDS('seu_obj.rds')
+counts <- scobj@assays$RNA@counts
+
+decontX_results <- decontX(counts)
+scobj$Contamination <- decontX_results$contamination
+head(scobj@meta.data)
+
+# --- Visualize Contamination (Pre-filter) ---
+FeaturePlot(scobj, 
+            features = 'Contamination', 
+            raster = FALSE) + 
+  scale_color_viridis_c() +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  xlab('scVI_UMAP_1') +
+  ylab('scVI_UMAP_2')
+
+# --- Count Total Cells ---
+num_cells <- ncol(scobj)
+num_cells <- length(Cells(scobj))
+print(num_cells)
+
+# --- Filter Cells (Retain cells with contamination ≤ 0.5) ---
+low_con_scobj <- scobj[, scobj$Contamination < 0.5] # Retain cells with value ≤ 0.5
+
+# --- Visualize Contamination (Post-filter) ---
+FeaturePlot(low_con_scobj, 
+            features = 'Contamination', 
+            raster = FALSE) + 
+  scale_color_viridis_c() +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  xlab('scVI_UMAP_1') +
+  ylab('scVI_UMAP_2')
+
+# --- Count Filtered Cells ---
+num_low_cells <- ncol(low_con_scobj)
+num_low_cells <- length(Cells(low_con_scobj))
+print(num_low_cells)
