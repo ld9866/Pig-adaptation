@@ -1,0 +1,146 @@
+#!/usr/bin/env Rscript
+# ==========================================
+# Differential Expression Analysis: TB vs LY within Cell Types
+# Purpose: Identify cell-type-specific DEGs between TB and LY groups,
+#          filter by expression change & significance, and visualize via Manhattan plot.
+# ==========================================
+
+# Load required libraries
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(scRNAtoolVis) # For jjVolcano
+library(RColorBrewer)
+
+# ==========================================
+# 1. Configuration & Parameters
+# ==========================================
+COMP_GROUPS <- c("TB", "LY") # ident.1, ident.2
+DEG_PARAMS <- list(
+  min_pct = 0.25,
+  log2fc_thresh = log2(1.5),
+  p_adj_max = 0.05,
+  pct_diff_min = 0.1,
+  log2fc_min = 1
+)
+HIGHLIGHT_GENES <- c("DDIT4", "GLUL")
+OUTPUT_DIR <- "results/figures"
+dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
+
+# ==========================================
+# 2. DEG Calculation (Loop over Cell Types)
+# ==========================================
+message("Calculating DEGs for each cell type (TB vs LY)...")
+Idents(seu_Im) <- "celltype"
+cell_types <- levels(seu_Im@active.ident)
+
+# Parallel-safe lapply to collect DEGs per cell type
+deg_list <- lapply(cell_types, function(ct) {
+  deg <- FindMarkers(
+    seu_Im,
+    ident.1 = COMP_GROUPS[1],
+    ident.2 = COMP_GROUPS[2],
+    group.by = "group",
+    subset.ident = ct,
+    min.pct = DEG_PARAMS$min_pct,
+    logfc.threshold = DEG_PARAMS$log2fc_thresh,
+    pseudocount.use = 0.001
+  )
+  deg$gene <- rownames(deg)
+  deg$celltype <- ct
+  return(deg)
+})
+deg_raw <- bind_rows(deg_list)
+
+# ==========================================
+# 3. DEG Filtering & Annotation
+# ==========================================
+message(" Filtering DEGs based on thresholds...")
+deg_clean <- deg_raw %>%
+  mutate(
+    pct_diff = pct.1 - pct.2,
+    regulation = case_when(
+      avg_log2FC >= DEG_PARAMS$log2fc_min & pct_diff >= DEG_PARAMS$pct_diff_min & p_val_adj <= DEG_PARAMS$p_adj_max ~ "Up",
+      avg_log2FC <= -DEG_PARAMS$log2fc_min & pct_diff <= -DEG_PARAMS$pct_diff_min & p_val_adj <= DEG_PARAMS$p_adj_max ~ "Down",
+      TRUE ~ "NS"
+    )
+  ) %>%
+  filter(regulation != "NS") %>%
+  # Remove Ensembl IDs, Ribosomal, and Mitochondrial genes
+  filter(!grepl("^ENSSSCG|^RPL|^RPS|^MT-", gene)) %>%
+  mutate(cluster = factor(celltype, levels = unique(celltype)))
+
+if(nrow(deg_clean) == 0) stop(" No DEGs passed filtering. Adjust thresholds or check data.")
+
+# ==========================================
+# 4. Visualization Preparation
+# ==========================================
+message(" Preparing plot data & colors...")
+n_clusters <- nlevels(deg_clean$cluster)
+palette_colors <- if(n_clusters <= 10) {
+  c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00",
+    "#FFFF33", "#A65628", "#F781BF", "#999999", "#66C2A5")[1:n_clusters]
+} else {
+  brewer.pal(min(n_clusters, 12), "Set3")
+}
+names(palette_colors) <- levels(deg_clean$cluster)
+
+# Prepare labels for top genes per cluster (avoid overlap with highlights)
+top_labels <- deg_clean %>%
+  group_by(cluster) %>%
+  slice_max(order_by = abs(avg_log2FC), n = 5) %>% # Replaces deprecated top_n
+  filter(!gene %in% HIGHLIGHT_GENES) %>%
+  ungroup()
+
+# ==========================================
+# 5. Plotting (Manhattan/Volcano Style)
+# ==========================================
+message("Generating Manhattan plot...")
+p_manhattan <- jjVolcano(
+  diffData = deg_clean,
+  x = "cluster",
+  y = "avg_log2FC",
+  tile.col = palette_colors,
+  pSize = 0.4,
+  celltypeSize = 2,
+  topGeneN = 0 # Disable auto-labeling to use custom ggrepel
+) +
+  scale_x_discrete(limits = levels(deg_clean$cluster)) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    panel.grid.minor = element_blank()
+  )
+
+# Add top gene labels
+if(nrow(top_labels) > 0) {
+  p_manhattan <- p_manhattan + geom_text_repel(
+    data = top_labels,
+    aes(x = cluster, y = avg_log2FC, label = gene),
+    size = 2.5, box.padding = 0.3, point.padding = 0.2, segment.color = "grey50"
+  )
+}
+
+# Highlight specific genes of interest
+if(length(HIGHLIGHT_GENES) > 0) {
+  hl_data <- deg_clean %>% filter(gene %in% HIGHLIGHT_GENES)
+  if(nrow(hl_data) > 0) {
+    p_manhattan <- p_manhattan +
+      geom_point(data = hl_data, aes(x = cluster, y = avg_log2FC),
+                 color = "red", size = 3, stroke = 0.5) +
+      geom_text_repel(
+        data = hl_data, aes(x = cluster, y = avg_log2FC, label = gene),
+        color = "red", size = 3, box.padding = 0.5, point.padding = 0.5, segment.color = "red"
+      )
+  }
+}
+
+print(p_manhattan)
+
+# ==========================================
+# 6. Export Results
+# ==========================================
+ggsave(file.path(OUTPUT_DIR, "DEG_Manhattan_TB_vs_LY.pdf"), p_manhattan, width = 12, height = 7, dpi = 300)
+write.csv(deg_clean, file.path(OUTPUT_DIR, "DEG_filtered_results.csv"), row.names = FALSE)
+message("Analysis & visualization completed. Outputs saved to results/figures/")
