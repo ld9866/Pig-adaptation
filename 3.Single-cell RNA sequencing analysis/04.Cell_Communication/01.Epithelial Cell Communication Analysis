@@ -1,130 +1,249 @@
+# ============================================================
+# CellChat Analysis: Pig-to-Human Ortholog Conversion + NOTCH Signaling
+# Description: Converts pig scRNA-seq data to human orthologs via g:Orth,
+#              runs CellChat for CP and TB groups, and analyzes NOTCH signaling.
+# Prerequisite: seu_Epi (Seurat object of Epithelium cells) must exist
+# ============================================================
 
-#!/usr/bin/env Rscript
-# ==========================================
-# Cell-Cell Communication Analysis (CellChat)
+# 0. Load packages
+library(Seurat); library(Matrix); library(CellChat)
+library(dplyr); library(data.table); library(ggplot2)
+library(patchwork); library(future)
 
+# ============================================================
+# 1. Extract pig genes and check
+# ============================================================
+pig_genes <- rownames(seu_Epi)
+length(pig_genes); head(pig_genes, 20)
 
-# Load required libraries
-library(CellChat)
-library(Seurat)
-library(ggplot2)
-library(patchwork)
-library(svglite)
+# Remove NA/empty and duplicates, then save for g:Orth upload
+pig_genes <- unique(pig_genes)
+pig_genes <- pig_genes[!is.na(pig_genes) & pig_genes != ""]
+length(pig_genes)
 
-# ==========================================
-# 1. Initialize CellChat Object & Database
-# ==========================================
-# Assumes 'seu_Epi' is pre-processed with 'celltype' metadata
-cellchat <- createCellChat(object = seu_Epi, group.by = "celltype")
+write.table(pig_genes, "pig_genes_for_gOrth.txt",
+            quote = FALSE, row.names = FALSE, col.names = FALSE)
 
-cellchat@DB <- CellChatDB.human
-cellchat <- subsetData(cellchat)
+# ============================================================
+# 2. Read g:Orth result (pig -> human orthologs)
+# ============================================================
+gorth <- fread("pig_human_gOrth.csv")
+dim(gorth); head(gorth); colnames(gorth)
 
-# ==========================================
-# 2. Core Analysis Pipeline
-# ==========================================
-# Cross-platform parallelization (multisession works on Win/Mac/Linux)
-future::plan("multisession", workers = 40)
+# ============================================================
+# 3. Remove records without human ortholog
+# ============================================================
+gorth_use <- gorth[
+  !is.na(ortholog_name) & ortholog_name != "" &
+  !is.na(ortholog_ensg) & ortholog_ensg != ""
+]
+dim(gorth_use)
 
-cellchat <- identifyOverExpressedGenes(cellchat)
-cellchat <- identifyOverExpressedInteractions(cellchat)
-cellchat <- smoothData(cellchat, adj = PPI.human)
-cellchat <- computeCommunProb(cellchat, raw.use = TRUE)
-cellchat <- filterCommunication(cellchat, min.cells = 10)
-cellchat <- computeCommunProbPathway(cellchat)
-cellchat <- aggregateNet(cellchat)
+# ============================================================
+# 4. Extract Seurat normalized expression
+# ============================================================
+DefaultAssay(seu_Epi) <- "RNA"
+expr_pig <- GetAssayData(seu_Epi, assay = "RNA", layer = "data")
+dim(expr_pig); head(rownames(expr_pig))
 
-future::plan("sequential") # Clean up parallel workers
+# Check if expression matrix uses symbol or Ensembl ID
+head(rownames(expr_pig), 20)
+mean(grepl("^ENSSSCG", rownames(expr_pig)))
 
-# ==========================================
-# 3. Pathway Ranking Visualization
-# ==========================================
-p5 <- rankNet(cellchat, mode = "comparison", stacked = TRUE, do.stat = TRUE)
-p6 <- rankNet(cellchat, mode = "comparison", stacked = FALSE, do.stat = TRUE)
-p_rank <- p5 + p6 + plot_annotation(title = "Pathway Ranking: Stacked vs. Grouped")
-print(p_rank)
+# ============================================================
+# 5. Build Pig symbol -> Human symbol mapping
+# ============================================================
+map <- gorth_use %>%
+  as.data.frame() %>%
+  transmute(
+    pig_gene = initial_alias, pig_ensembl = initial_ensg,
+    human_gene = ortholog_name, human_ensembl = ortholog_ensg
+  ) %>%
+  filter(pig_gene %in% rownames(expr_pig)) %>%
+  distinct()
 
-# ==========================================
-# 4. Condition Comparison: Bubble Plots
-# Purpose: Visualize up/down-regulated ligand-receptor pairs between conditions.
-# Prerequisite: 'cellchat' must contain merged datasets (see note below).
-# ==========================================
+# ============================================================
+# 6. Keep only 1-to-1 Pig -> Human relationships
+# ============================================================
+pig_n <- map %>% distinct(pig_gene, human_gene) %>% count(pig_gene, name = "n_human")
+human_n <- map %>% distinct(pig_gene, human_gene) %>% count(human_gene, name = "n_pig")
 
-# Note: If analyzing multiple conditions, merge them first:
-# object.list <- list(NL = cellchat_nl, LS = cellchat_ls)
-# cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+map_1to1 <- map %>%
+  left_join(pig_n, by = "pig_gene") %>%
+  left_join(human_n, by = "human_gene") %>%
+  filter(n_human == 1, n_pig == 1) %>%
+  distinct(pig_gene, human_gene, .keep_all = TRUE)
 
-# Map numeric IDs to your actual cell types/clusters
-sources.use <- 4          # e.g., Fibroblasts
-targets.use <- 5:12       # e.g., Immune & Endothelial subsets
-comparison.groups <- c(1, 2) # Indices: 1 = NL (Control), 2 = LS (Disease/Treatment)
+dim(map_1to1); head(map_1to1)
 
-# Bubble plot: Interactions stronger in dataset 2 (LS)
-p7 <- netVisual_bubble(cellchat,
-                       sources.use = sources.use,
-                       targets.use = targets.use,
-                       comparison = comparison.groups,
-                       max.dataset = 2,
-                       title.name = "Increased signaling in TB",
-                       angle.x = 45,
-                       remove.isolate = TRUE)
+# ============================================================
+# 7. Check for duplicates (both should be 0)
+# ============================================================
+sum(duplicated(map_1to1$pig_gene))
+sum(duplicated(map_1to1$human_gene))
 
-# Bubble plot: Interactions weaker in dataset 2 (i.e., stronger in dataset 1 / NL)
-p8 <- netVisual_bubble(cellchat,
-                       sources.use = sources.use,
-                       targets.use = targets.use,
-                       comparison = comparison.groups,
-                       max.dataset = 1,
-                       title.name = "Decreased signaling in LY",
-                       angle.x = 45,
-                       remove.isolate = TRUE)
+# ============================================================
+# 8. Save the 1-to-1 ortholog table
+# ============================================================
+write.csv(map_1to1, "Pig_Human_1to1_gOrth_for_CellChat.csv", row.names = FALSE)
 
-# Combine & export
-p_bubble <- p7 + p8 + plot_annotation(title = "Differential Communication: TB vs LY")
-print(p_bubble)
+# ============================================================
+# 9. Build human expression matrix
+# ============================================================
+expr_human <- expr_pig[map_1to1$pig_gene, , drop = FALSE]
+rownames(expr_human) <- map_1to1$human_gene
 
-# ==========================================
-# 5. Signaling Network Visualization
-# ==========================================
-pathways.show <- c("NOTCH")
+# ============================================================
+# 10. Check mapping results
+# ============================================================
+dim(expr_pig); dim(expr_human)
+sum(duplicated(rownames(expr_human)))
 
-# Use current object for single-condition plot, or object.list for multi-condition
-object.list <- list(Current = cellchat)
-weight.max <- getMaxWeight(object.list, slot.name = "netP", attribute = pathways.show)
+cat("Pig genes =", nrow(expr_pig), "\n")
+cat("Mapped human genes =", nrow(expr_human), "\n")
+cat("Mapping rate =", round(nrow(expr_human) / nrow(expr_pig) * 100, 2), "%\n")
 
-par(mfrow = c(1, length(object.list)), xpd = TRUE)
-for (i in seq_along(object.list)) {
-  netVisual_aggregate(object.list[[i]],
-                      signaling = pathways.show,
-                      layout = "circle",
-                      edge.weight.max = weight.max[1],
-                      edge.width.max = 10,
-                      signaling.name = paste(pathways.show, names(object.list)[i]))
-}
+# ============================================================
+# 11. Check NOTCH pathway genes
+# ============================================================
+notch_genes <- c("NOTCH1", "NOTCH2", "NOTCH3", "NOTCH4",
+                 "JAG1", "JAG2", "DLL1", "DLL3", "DLL4")
+data.frame(gene = notch_genes, present = notch_genes %in% rownames(expr_human))
 
-# ==========================================
-# 6. Ligand/Receptor Expression by Dataset
-# ==========================================
-dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+# ============================================================
+# 12. Metadata alignment
+# ============================================================
+meta <- seu_Epi@meta.data
+meta <- meta[colnames(expr_human), , drop = FALSE]
+stopifnot(identical(rownames(meta), colnames(expr_human)))
+table(meta$group); table(meta$celltype, meta$group)
 
-# Lock factor levels for reproducible legend ordering
-cellchat@meta$datasets <- factor(cellchat@meta$datasets, levels = c("NL", "LS"))
+# ============================================================
+# 13. Split into CP and TB
+# ============================================================
+CP_cells <- rownames(meta)[meta$group == "CP"]
+TB_cells <- rownames(meta)[meta$group == "TB"]
 
-p_expr <- plotGeneExpression(cellchat,
-                             signaling = "NOTCH",
-                             split.by = "datasets",
-                             colors.ggplot = TRUE)
+expr_CP <- expr_human[, CP_cells, drop = FALSE]
+expr_TB <- expr_human[, TB_cells, drop = FALSE]
+meta_CP <- meta[CP_cells, , drop = FALSE]
+meta_TB <- meta[TB_cells, , drop = FALSE]
 
-p_expr <- p_expr +
-  theme_minimal(base_size = 12) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(title = "CXCL Pathway: Ligand/Receptor Expression by Dataset")
+# ============================================================
+# 14. CellChat database
+# ============================================================
+CellChatDB <- CellChatDB.human
 
-ggsave("results/figures/CXCL_expression_by_dataset.pdf",
-       plot = p_expr, width = 10, height = 6, dpi = 300)
+# ============================================================
+# 15. CP CellChat pipeline
+# ============================================================
+CP.cellchat <- createCellChat(object = expr_CP, meta = meta_CP, group.by = "celltype")
+CP.cellchat@DB <- CellChatDB
+CP.cellchat <- subsetData(CP.cellchat)
+CP.cellchat <- identifyOverExpressedGenes(CP.cellchat)
+CP.cellchat <- identifyOverExpressedInteractions(CP.cellchat)
+CP.cellchat <- smoothData(CP.cellchat, adj = PPI.human)
+CP.cellchat <- computeCommunProb(CP.cellchat, raw.use = TRUE)
+CP.cellchat <- filterCommunication(CP.cellchat, min.cells = 10)
+CP.cellchat <- computeCommunProbPathway(CP.cellchat)
+CP.cellchat <- aggregateNet(CP.cellchat)
 
-# Save comparison bubble plot
-ggsave("results/figures/comm_bubble_NL_vs_LS.pdf",
-       plot = p_bubble, width = 14, height = 7, dpi = 300)
+# ============================================================
+# 16. TB CellChat pipeline
+# ============================================================
+TB.cellchat <- createCellChat(object = expr_TB, meta = meta_TB, group.by = "celltype")
+TB.cellchat@DB <- CellChatDB
+TB.cellchat <- subsetData(TB.cellchat)
+TB.cellchat <- identifyOverExpressedGenes(TB.cellchat)
+TB.cellchat <- identifyOverExpressedInteractions(TB.cellchat)
+TB.cellchat <- smoothData(TB.cellchat, adj = PPI.human)
+TB.cellchat <- computeCommunProb(TB.cellchat, raw.use = TRUE)
+TB.cellchat <- filterCommunication(TB.cellchat, min.cells = 10)
+TB.cellchat <- computeCommunProbPathway(TB.cellchat)
+TB.cellchat <- aggregateNet(TB.cellchat)
 
-message(" CellChat pipeline completed successfully.")
+# ============================================================
+# 17. Save individual CellChat objects
+# ============================================================
+saveRDS(CP.cellchat, "CP_CellChat_gOrth.rds")
+saveRDS(TB.cellchat, "TB_CellChat_gOrth.rds")
+
+# ============================================================
+# 18. Check NOTCH pathway presence
+# ============================================================
+"NOTCH" %in% CP.cellchat@netP$pathways
+"NOTCH" %in% TB.cellchat@netP$pathways
+CP.cellchat@netP$pathways
+TB.cellchat@netP$pathways
+
+# ============================================================
+# 19. Merge CP and TB (1 = CP, 2 = TB)
+# ============================================================
+object.list <- list(CP = CP.cellchat, TB = TB.cellchat)
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+
+# ============================================================
+# 20. Compare total interactions / weights
+# ============================================================
+p1 <- compareInteractions(cellchat, show.legend = FALSE, group = c(1, 2))
+p2 <- compareInteractions(cellchat, show.legend = FALSE, group = c(1, 2), measure = "weight")
+p1 + p2
+
+# ============================================================
+# 21. Differential interaction network
+# ============================================================
+par(mfrow = c(1, 2), xpd = TRUE)
+netVisual_diffInteraction(cellchat, weight.scale = TRUE)
+netVisual_diffInteraction(cellchat, weight.scale = TRUE, measure = "weight")
+
+# ============================================================
+# 22. NOTCH signaling increased in TB
+# ============================================================
+p7 <- netVisual_bubble(cellchat, comparison = c(1, 2), max.dataset = 2,
+                       signaling = "NOTCH",
+                       title.name = "Increased NOTCH signaling in TB",
+                       angle.x = 45, remove.isolate = TRUE)
+p7
+
+# ============================================================
+# 23. NOTCH signaling decreased in TB
+# ============================================================
+p8 <- netVisual_bubble(cellchat, comparison = c(1, 2), max.dataset = 1,
+                       signaling = "NOTCH",
+                       title.name = "Decreased NOTCH signaling in TB",
+                       angle.x = 45, remove.isolate = TRUE)
+p8
+p7 + p8
+
+# ============================================================
+# 24. NOTCH network visualization
+# ============================================================
+netVisual_aggregate(CP.cellchat, signaling = "NOTCH", layout = "circle")
+netVisual_aggregate(TB.cellchat, signaling = "NOTCH", layout = "circle")
+
+# ============================================================
+# 25. Extract NOTCH communication results
+# ============================================================
+CP.NOTCH <- subsetCommunication(CP.cellchat, signaling = "NOTCH")
+TB.NOTCH <- subsetCommunication(TB.cellchat, signaling = "NOTCH")
+CP.NOTCH; TB.NOTCH
+
+# Optional: ranked network comparison and gene expression plot
+# gg1 <- rankNet(cellchat, mode = "comparison", stacked = TRUE,
+#                do.stat = TRUE, comparison = c(1, 2))
+gg2 <- rankNet(cellchat, mode = "comparison", stacked = FALSE,
+               do.stat = TRUE, comparison = c(1, 2))
+
+cellchat@meta$datasets <- factor(cellchat@meta$datasets, levels = c("CP", "TB"))
+plotGeneExpression(cellchat, signaling = "NOTCH", split.by = "datasets", colors.ggplot = TRUE)
+
+# ============================================================
+# 26. Save NOTCH results
+# ============================================================
+write.csv(CP.NOTCH, "CP_NOTCH_CellChat.csv", row.names = FALSE)
+write.csv(TB.NOTCH, "TB_NOTCH_CellChat.csv", row.names = FALSE)
+
+# ============================================================
+# 27. Save merged CellChat object
+# ============================================================
+saveRDS(cellchat, "CP_TB_CellChat_gOrth_merged.rds")
